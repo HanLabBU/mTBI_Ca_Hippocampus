@@ -1,0 +1,471 @@
+function ROIstoVideos()
+    %Code that goes through, recursively finds files, and updates/saves them.
+    %It uses Mike's adjusted version of Mark's motion correction, followed by
+    %taking the previous ROI output of Mark's code and applying that mask to
+    %the newly processed data, to output a RegionOfInterest object that has
+    %been processed according to Mike's Method.
+
+    %Pre Defined Components (Naming)
+    uintoutname = 'MyName';
+    rfn = 'R_Date.mat';
+    outname = 'R_MyName.mat';
+    
+    %Find ROI Directory
+    basedir = 'Dir'; %Base
+    cd(basedir);
+    %New Mice
+    [~, list] = system( 'dir /B /S R_Date.mat'); %Used for Initial Run Throughs
+    temp_result = textscan( list, '%s', 'delimiter', '\n' );
+    temp_result = temp_result{1};
+    %Old Mice
+    [~, old_list] = system( 'dir /B /S R_Date.mat');
+    temp_old = textscan( old_list, '%s', 'delimiter', '\n' );
+    temp_old = temp_old{1};
+    filename_list = [temp_result; temp_old]; %;temp_old]; %Use for All Data.
+    
+    %Find Motion Corrected Videos %Use when all ready have MC Vids ###
+    [~, mlist] = system( 'dir /B /S m_*.tif');
+    mtemp_result = textscan( mlist, '%s', 'delimiter', '\n' );
+    mtemp_result = mtemp_result{1};
+    full_file_list = [mtemp_result]; %Use for All Data.
+    
+    %filename_list = {filename_list{6}, filename_list{14}};%Do only selected files
+    
+    h = waitbar(0,'Looping Through Video Files...');
+
+    for idx = 1:numel(filename_list) 
+        %Find Video Files
+        [pathstr, name, ext] = fileparts(filename_list{idx});
+        fullpathstr = pathstr;
+        cd(fullpathstr);
+        
+%         %Use when all ready have MC Vids ###
+%         cInds = strfind(full_file_list, fullpathstr);
+%         inds = find(not(cellfun('isempty',cInds)));
+%         file_list = full_file_list(inds);
+        
+        %Use when don't have MC Vids ##
+        [~, list] = system('dir /B *.tif');
+        temp_result = textscan(list, '%s', 'delimiter', '\n');
+        tifs = temp_result{1};
+        fulltifs = cell(numel(tifs),1);
+        for iter= 1:numel(tifs) 
+            fulltifs{iter} = fullfile(fullpathstr, tifs{iter});
+        end        
+        list = dir('*.tif');
+        tifs = {list.name};
+
+        %Do Mike's Video Processing
+        file_list = motion_correction_HT(fullpathstr, tifs); %Comment Out for just trace extraction %Use when don't have MC Vids ##
+        clear r_out R
+        fprintf('%s\n',file_list{end}) %Print filename to know timing
+        load(filename_list{idx});
+        r_out = extract_trace(R, file_list);
+        save(rfn,'r_out');
+
+        waitbar (idx / numel(filename_list))
+    end
+    close(h)
+    
+end
+
+function [output_filename] = motion_correction_HT(fdir, fname)
+
+% motion correct each file and save it with 'm_' at the beginning
+
+    whole_tic = tic;
+    % [fname,fdir] = uigetfile('*.tif','MultiSelect','on');
+    % fdir = 'C:\WD demo\segmentation wu\';
+    % fname = 'Ali26-day5(00001).tif';
+    cd(fdir)
+    switch class(fname)
+        case 'char'
+            fileName{1} = [fdir,fname];
+        case 'cell'
+            fileName = cell(numel(fname),1);
+            for n = 1:numel(fname)
+                fileName{n} = fullfile(fdir,fname{n});
+            end
+    end
+    short_fname = fname;
+    nFiles = numel(fileName);
+    fprintf(['Total file number: ',num2str(nFiles),'\n']);
+    tifFile = struct(...
+        'fileName',fileName(:),...
+        'tiffTags',repmat({struct.empty(0,1)},nFiles,1),...
+        'nFrames',repmat({0},nFiles,1),...
+        'frameSize',repmat({[1024 1024]},nFiles,1));
+    for n = 1:nFiles
+        fprintf(['Getting info from ',short_fname{n},'\n']);
+    %     tifFile(n).fileName = fname{n};
+        tifFile(n).fileName = fileName{n};
+        tifFile(n).tiffTags = imfinfo(fileName{n});
+        tifFile(n).nFrames = numel(tifFile(n).tiffTags);
+        tifFile(n).frameSize = [tifFile(n).tiffTags(1).Height tifFile(n).tiffTags(1).Width];
+    end
+    % nTotalFrames = sum([tifFile(:).nFrames]);
+    % fileFrameIdx.last = cumsum([tifFile(:).nFrames]);
+    % fileFrameIdx.first = [0 fileFrameIdx.last(1:end-1)]+1;
+    % [tifFile.firstIdx] = deal(fileFrameIdx.first);
+    % [tifFile.lastIdx] = deal(fileFrameIdx.last);
+
+    % [d8a, singleFrameRoi, procstart, info] = processFirstVidFile(tifFile(1).fileName);
+%     data = cell(nFiles,1);
+    nTotalFrames = zeros(nFiles,1);
+    for n = 1:nFiles
+        single_tic = tic;
+        fprintf(['Processing ',short_fname{n},'\n']);
+        fname = tifFile(n).fileName;
+
+        % LOAD FILE
+        [data, info, ~] = loadTif(fname);
+
+        % GET COMMON FILE-/FOLDER-NAME
+    %     [fp,~] = fileparts(tifFile.fileName);
+    %     [~,fp] = fileparts(fp);
+    %     procstart.commonFileName = fp;
+    %     nFiles = numel(tifFile);
+         nTotalFrames(n) = info(end).frame;
+    %     fprintf('Loading %s from %i files (%i frames)\n', procstart.commonFileName, nFiles, nTotalFrames);
+
+
+        % RANDOMLY CHOOSE FRAMES TO REPRESENT SET AT EACH STAGE OF PROCESSING
+    %     representativeFrameIdx = randi([1 nTotalFrames], [min([10 nTotalFrames]), 1]);
+    %     procstart.procstep.order = {...
+    %         'raw',...
+    %         'illuminationcorrected',...
+    %         'motioncorrected',...
+    %         'spatialfiltered',...
+    %         'normalized',...
+    %         'compressed',...
+    %         'roisegmented'};
+    %     procstart.procstep.raw = data(:,:,representativeFrameIdx);
+
+
+        % ------------------------------------------------------------------------------------------
+        % FILTER & NORMALIZE VIDEO, AND SAVE AS UINT8
+        % ------------------------------------------------------------------------------------------
+
+        % PRE-FILTER TO CORRECT FOR UNEVEN ILLUMINATION (HOMOMORPHIC FILTER)
+%         if n==1 
+%             [data, procstart.hompre] = homomorphicFilter(data);
+%         else
+%             [data, procstart.hompre] = homomorphicFilter(data, procstart.hompre);
+%         end
+        %     procstart.procstep.illuminationcorrected = data(:,:,representativeFrameIdx);
+
+        % CORRECT FOR MOTION (IMAGE STABILIZATION)
+        if n ==1 
+            [data, procstart.xc,procstart.prealign] = correctMotion(data);
+        else
+            [data, procstart.xc,procstart.prealign] = correctMotion(data,procstart.prealign);
+        end
+        
+        save_filename = ['m_',short_fname{n}];
+        fprintf(['Saving ',save_filename,'\n']);
+        
+        output_filename{n,1} = save_filename;
+        matrix2tiff(data, save_filename, 'w');
+        fprintf(['\t',num2str(round(toc(single_tic)/60,2)),' minutes.\n']);
+
+    end
+    fprintf(['Total processing time: ',num2str(round(toc(whole_tic)/60,2)),' minutes.\n']);
+
+
+end
+
+function [data, pre] = homomorphicFilter(data,pre)
+% Implemented by Mark Bucklin 6/12/2014
+%
+% FROM WIKIPEDIA ENTRY ON HOMOMORPHIC FILTERING
+% Homomorphic filtering is a generalized technique for signal and image
+% processing, involving a nonlinear mapping to a different domain in which
+% linear filter techniques are applied, followed by mapping back to the
+% original domain. This concept was developed in the 1960s by Thomas
+% Stockham, Alan V. Oppenheim, and Ronald W. Schafer at MIT.
+%
+% Homomorphic filter is sometimes used for image enhancement. It
+% simultaneously normalizes the brightness across an image and increases
+% contrast. Here homomorphic filtering is used to remove multiplicative
+% noise. Illumination and reflectance are not separable, but their
+% approximate locations in the frequency domain may be located. Since
+% illumination and reflectance combine multiplicatively, the components are
+% made additive by taking the logarithm of the image intensity, so that
+% these multiplicative components of the image can be separated linearly in
+% the frequency domain. Illumination variations can be thought of as a
+% multiplicative noise, and can be reduced by filtering in the log domain.
+%
+% To make the illumination of an image more even, the high-frequency
+% components are increased and low-frequency components are decreased,
+% because the high-frequency components are assumed to represent mostly the
+% reflectance in the scene (the amount of light reflected off the object in
+% the scene), whereas the low-frequency components are assumed to represent
+% mostly the illumination in the scene. That is, high-pass filtering is
+% used to suppress low frequencies and amplify high frequencies, in the
+% log-intensity domain.[1]
+%
+% More info HERE: http://www.cs.sfu.ca/~stella/papers/blairthesis/main/node35.html
+%% DEFINE PARAMETERS and PROCESS INPUT
+% gpu = gpuDevice(1);
+% CONSTRUCT HIGH-PASS (or Low-Pass) FILTER
+sigma = 50;
+filtSize = 2 * sigma + 1;
+hLP = fspecial('gaussian',filtSize,sigma);
+% GET RANGE FOR CONVERSION TO FLOATING POINT INTENSITY IMAGE
+if nargin < 2
+	%    pre.dmax = getNearMax(data); %TODO: move into file as subfunction
+	%    pre.dmin = getNearMin(data);
+	pre.dmax = max(data(:));
+	pre.dmin = min(data(:));
+end
+inputScale = single(pre.dmax - pre.dmin);
+inputOffset = single(pre.dmin);
+outputRange = [0 65535];
+outputScale = outputRange(2) - outputRange(1);
+outputOffset = outputRange(1);
+% PROCESS FRAMES IN BATCHES TO AVOID PAGEFILE SLOWDOWN??TODO?
+sz = size(data);
+N = sz(3);
+nPixPerFrame = sz(1) * sz(2);
+nBytesPerFrame = nPixPerFrame * 2;
+
+% multiWaitbar('Applying Homomorphic Filter',0);
+
+for k=1:N
+	%    if nBytesPerFrame > gpu.AvailableMemory
+	% 	  wait(gpu);
+	%    end
+	% 	multiWaitbar('Applying Homomorphic Filter', 'Increment', 1/N);
+	data(:,:,k) = homFiltSingleFrame(data(:,:,k));
+end
+% multiWaitbar('Applying Homomorphic Filter','Close');
+
+	function im = homFiltSingleFrame( im)
+		persistent ioLast
+		% TRANSFER TO 7 AND CONVERT TO DOUBLE-PRECISION INTENSITY IMAGE
+		imGray =  (single(im) - inputOffset)./inputScale   + 1;					% {1..2}
+		% USE MEAN TO DETERMINE A SCALAR BASELINE ILLUMINATION INTENSITY IN LOG DOMAIN
+		io = log( mean(imGray(imGray<median(imGray(:))))); % mean of lower 50% of pixels		% {0..0.69}
+		if isnan(io)
+			if ~isempty(ioLast)
+				io = ioLast;
+			else
+				io = .1;
+			end
+		end
+		% LOWPASS-FILTERED IMAGE (IN LOG-DOMAIN) REPRESENTS UNEVEN ILLUMINATION
+		imGray = log(imGray);																				% log(imGray) -> {0..0.69}
+		imLp = imfilter( imGray, hLP, 'replicate');														%  imLp -> ?
+		% SUBTRACT LOW-FREQUENCY "ILLUMINATION" COMPONENT
+		imGray = exp( imGray - imLp + io) - 1;			% {0..2.72?} -> {-1..1.72?}
+		% RESCALE FOR CONVERSION BACK TO ORIGINAL DATATYPE
+		imGray = imGray .* outputScale  + outputOffset;
+		% CLEAN UP LOW-END (SATURATE TO ZERO OR 100)
+		% 	  im(im<outputRange(1)) = outputRange(1);
+		% CAST TO ORIGINAL DATATYPE (UINT16) AND RETURN
+		im = uint16(imGray);
+		ioLast = io;
+	end
+end
+
+function [data, xc, prealign] = correctMotion(data, prealign)
+fprintf('Correcting Motion \n')
+sz = size(data);
+nFrames = sz(3);
+if nargin < 2
+	prealign.cropBox = selectWindowForMotionCorrection(data,sz(1:2)./2);
+	prealign.n = 0;
+end
+ySubs = round(prealign.cropBox(2): (prealign.cropBox(2)+prealign.cropBox(4)-1)');
+xSubs = round(prealign.cropBox(1): (prealign.cropBox(1)+prealign.cropBox(3)-1)');
+croppedVid = data(ySubs,xSubs,:);
+cropSize = size(croppedVid);
+maxOffset = floor(min(cropSize(1:2))/10);
+ysub = maxOffset+1 : cropSize(1)-maxOffset;
+xsub = maxOffset+1 : cropSize(2)-maxOffset;
+yPadSub = maxOffset+1 : sz(1)+maxOffset;
+xPadSub = maxOffset+1 : sz(2)+maxOffset;
+if ~isfield(prealign, 'template')
+	vidMean = im2single(croppedVid(:,:,1));
+	templateFrame = vidMean(ysub,xsub);
+else
+	templateFrame = prealign.template;
+end
+offsetShift = min(size(templateFrame)) + maxOffset;
+validMaxMask = [];
+N = nFrames;
+xc.cmax = zeros(N,1);
+xc.xoffset = zeros(N,1);
+xc.yoffset = zeros(N,1);
+
+% ESTIMATE IMAGE DISPLACEMENT USING NORMXCORR2 (PHASE-CORRELATION)
+for k = 1:N
+	movingFrame = im2single(croppedVid(:,:,k));
+	c = normxcorr2(templateFrame, movingFrame);
+	
+	% RESTRICT VALID PEAKS IN XCORR MATRIX
+	if isempty(validMaxMask)
+		validMaxMask = false(size(c));
+		validMaxMask(offsetShift-maxOffset:offsetShift+maxOffset, offsetShift-maxOffset:offsetShift+maxOffset) = true;
+	end
+	c(~validMaxMask) = false;
+	c(c<0) = false;
+	
+	% FIND PEAK IN CROSS CORRELATION
+	[cmax, imax] = max(abs(c(:)));
+	[ypeak, xpeak] = ind2sub(size(c),imax(1));
+	xoffset = xpeak - offsetShift;
+	yoffset = ypeak - offsetShift;
+	
+	% APPLY OFFSET TO TEMPLATE AND ADD TO VIDMEAN
+	adjustedFrame = movingFrame(ysub+yoffset , xsub+xoffset);
+	nt = prealign.n / (prealign.n + 1);
+	na = 1/(prealign.n + 1);
+	templateFrame = templateFrame*nt + adjustedFrame*na;
+	prealign.n = prealign.n + 1;
+	xc.cmax(k) = cmax;
+	dx = xoffset;
+	dy = yoffset;
+	xc.xoffset(k) = dx;
+	xc.yoffset(k) = dy;
+	
+	% APPLY OFFSET TO FRAME
+	padFrame = padarray(data(:,:,k), [maxOffset maxOffset], 'replicate', 'both');
+	data(:,:,k) = padFrame(yPadSub+dy, xPadSub+dx);
+	
+end
+prealign.template = templateFrame;
+
+end
+
+function matrix2tiff(f_matrix, filename, method)
+
+    % if ~isempty(dir(filename))
+    %     overwrite = input('File already exists. Overwrite (0-no/1-yes)?');
+    %     if isempty(overwrite) || overwrite==0
+    %         load(fnmat)
+    %         return
+    %     end
+    % end
+
+
+
+    if isempty(strfind(filename,'.tif'))
+        filename = [filename,'.tif'];
+    end
+
+    NumberImages = size(f_matrix,3);
+
+    switch method
+        case 'w'
+            FileOut = Tiff(filename,'w');
+
+        case 'w8'
+            FileOut = Tiff(filename,'w8');
+    end
+
+    tags.ImageLength = size(f_matrix,1);
+    tags.ImageWidth = size(f_matrix,2);
+    tags.Photometric = Tiff.Photometric.MinIsBlack;
+    tags.PlanarConfiguration = Tiff.PlanarConfiguration.Chunky;
+    tags.BitsPerSample = 16;
+    setTag(FileOut, tags);
+    FileOut.write(f_matrix(:,:,1));
+    for i=2:NumberImages
+        FileOut.writeDirectory();
+        setTag(FileOut, tags);
+        FileOut.write(f_matrix(:,:,i));
+    end
+    FileOut.close()
+
+    %movefile('temp_file',filename);
+
+end
+
+function r_out=extract_trace(r_in, selected_files)
+    
+    %[selected_files,~] = uigetfile('*.tif','MultiSelect','on');
+    
+    whole_tic = tic;
+    
+    if class(selected_files)=='char'
+        file_list(1).name = selected_files;
+    else
+        file_list = cell2struct(selected_files,'name',2);
+    end
+    
+    for file_idx=1:length(file_list)
+        
+        
+        filename = file_list(file_idx).name;
+        fprintf('Processing %s....\n',filename);
+        
+        InfoImage = imfinfo(filename);
+        NumberImages=length(InfoImage);
+
+        f_matrix = zeros(InfoImage(1).Height,InfoImage(1).Width,NumberImages,'uint16');
+        for i=1:NumberImages
+            f_matrix(:,:,i) = imread(filename,'Index',i,'Info',InfoImage);
+        end
+        
+        f_matrix = double(reshape(f_matrix,InfoImage(1).Height*InfoImage(1).Width,NumberImages));
+        
+        for roi_idx=1:numel(r_in)
+            current_mask = zeros(1,InfoImage(1).Height*InfoImage(1).Width);
+            try
+                current_mask(r_in(roi_idx).pixel_idx) = 1;
+                r_out(roi_idx).pixel_idx = r_in(roi_idx).pixel_idx;
+            catch
+                current_mask(r_in(roi_idx).PixelIdxList) = 1;
+                r_out(roi_idx).pixel_idx = r_in(roi_idx).PixelIdxList;
+            end
+            current_trace = (current_mask*f_matrix)/sum(current_mask);
+            r_out(roi_idx).file(file_idx).filename = filename;
+            r_out(roi_idx).file(file_idx).trace = current_trace;
+            
+            if file_idx==1
+                r_out(roi_idx).trace = current_trace;
+            else
+                r_out(roi_idx).trace = cat(2,r_out(roi_idx).trace,current_trace);
+            end
+            
+        end
+        
+    end
+    
+    for roi_idx=1:numel(r_in)
+        r_out(roi_idx).color = rand(1,3);
+    end
+        
+    fprintf(['Total loading time: ',num2str(round(toc(whole_tic),2)),' seconds.\n']);
+    
+end
+
+function winRectangle = selectWindowForMotionCorrection(data, winsize)
+    if numel(winsize) <2
+       winsize = [winsize winsize];
+    end
+    sz = size(data);
+    win.edgeOffset = round(sz(1:2)./4);
+    win.rowSubs = win.edgeOffset(1):sz(1)-win.edgeOffset(1);
+    win.colSubs =  win.edgeOffset(2):sz(2)-win.edgeOffset(2);
+    stat.Range = range(data, 3);
+    stat.Min = min(data, [], 3);
+    win.filtSize = min(winsize)/2;
+    imRobust = double(imfilter(rangefilt(stat.Min),fspecial('average',win.filtSize))) ./ double(imfilter(stat.Range, fspecial('average',win.filtSize)));
+    %gaussmat = gauss2d(sz(1), sz(2), sz(1)/2.5, sz(2)/2.5, sz(1)/2, sz(2)/2);
+    %gaussmat = gaussmat * (mean2(imRobust) / max(gaussmat(:)));
+    %imRobust = imRobust .*gaussmat;
+    imRobust = imRobust(win.rowSubs, win.colSubs);
+    [~, maxInd] = max(imRobust(:));
+    [win.rowMax, win.colMax] = ind2sub([length(win.rowSubs) length(win.colSubs)], maxInd);
+    win.rowMax = win.rowMax + win.edgeOffset(1);
+    win.colMax = win.colMax + win.edgeOffset(2);
+    win.rows = win.rowMax-winsize(1)/2+1 : win.rowMax+winsize(1)/2;
+    win.cols = win.colMax-winsize(2)/2+1 : win.colMax+winsize(2)/2;
+    winRectangle = [win.cols(1) , win.rows(1) , win.cols(end)-win.cols(1) , win.rows(end)-win.rows(1)];
+
+
+
+end
+
